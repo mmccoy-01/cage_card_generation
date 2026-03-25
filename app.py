@@ -34,7 +34,7 @@ app_ui = ui.page_sidebar(
     ui.h4("Status"),
     ui.output_text_verbatim("status"),
     ui.h4("Preview of uploaded sheet"),
-    ui.output_table("preview"),
+    ui.output_data_frame("preview"),
     title="Mouse cage cards",
 )
 
@@ -97,15 +97,16 @@ def server(input: Inputs, output: Outputs, session: Session):
             lines.extend(f"- {item}" for item in warnings_list)
         return "\n".join(lines)
 
-    @render.table
+    @render.data_frame
     def preview():
         file_info = uploaded_file()
         if file_info is None:
-            return pd.DataFrame()
+            return render.DataGrid(pd.DataFrame(), filters=True, height="350px")
         try:
-            return pd.read_excel(file_info["datapath"]).head(12)
+            df = pd.read_excel(file_info["datapath"]).head(12)
+            return render.DataGrid(df, filters=True, height="350px")
         except Exception as exc:
-            return pd.DataFrame({"error": [str(exc)]})
+            return render.DataGrid(pd.DataFrame({"error": [str(exc)]}), filters=False, height="120px")
 
     @render.download(filename="notecards.xlsx")
     def download_cards():

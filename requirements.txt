@@ -3,3 +3,4 @@ openpyxl
 xlsxwriter
 PyYAML
 pandas
+Jinja2
