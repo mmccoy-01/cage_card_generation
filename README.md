@@ -2,6 +2,8 @@
 
 A small Shiny for Python app that converts a SoftMouse `.xlsx` export into a printable `notecards.xlsx` file for cage cards.
 
+To run online: visit [posit connect cloud link](https://019d274e-8c19-ccbd-b9f6-2762e561ccd9.share.connect.posit.cloud/)
+
 ## What it does
 
 - Upload a SoftMouse Excel sheet
@@ -26,7 +28,3 @@ A small Shiny for Python app that converts a SoftMouse `.xlsx` export into a pri
 pip install -r requirements.txt
 shiny run --reload app.py
 ```
-
-## Run online
-
-Visit posit connect cloud link on right hand side.
