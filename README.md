@@ -1,6 +1,6 @@
 # Mouse Cage Card Generator
 
-A small Shiny for Python app that converts a SoftMouse `.xlsx` export into a printable `notecards.xlsx` file for cage cards.
+A small Shiny for Python app that converts a SoftMouse `.xlsx` export into a printable `notecards.xlsx` file for cage cards. Inspired by https://github.com/mfe7/mouse_cage_cards
 
 To run online: visit [posit connect cloud link](https://019d274e-8c19-ccbd-b9f6-2762e561ccd9.share.connect.posit.cloud/)
 
