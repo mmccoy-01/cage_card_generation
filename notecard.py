@@ -288,20 +288,21 @@ def write_card(
     approved_date = safe_str(cage.get("approved_date")) or settings.get("approved_date", "")
     expires_date = safe_str(cage.get("expires_date")) or settings.get("expires_date", "")
 
-    date_text = ""
-    if approved_date and expires_date:
-        date_text = f"Approved: {approved_date}  Expires: {expires_date}"
-    elif approved_date:
-        date_text = f"Approved: {approved_date}"
-    elif expires_date:
-        date_text = f"Expires: {expires_date}"
-
     worksheet.merge_range(
         start_row,
         start_col,
         start_row,
-        start_col + 3,
+        start_col + 1,
         f"PI: {settings.get('PI_name', '')}",
+        formats["header"],
+    )
+
+    worksheet.merge_range(
+        start_row,
+        start_col + 2,
+        start_row,
+        start_col + 3,
+        f"Protocol: {protocol_num}",
         formats["header"],
     )
 
@@ -324,13 +325,13 @@ def write_card(
         formats["value"],
     )
 
-    worksheet.write(start_row + 1, start_col + 3, "Protocol", formats["label"])
+    worksheet.write(start_row + 1, start_col + 3, "Approved", formats["label"])
     worksheet.merge_range(
         start_row + 1,
         start_col + 4,
         start_row + 1,
         start_col + 5,
-        protocol_num,
+        approved_date,
         formats["value_center"],
     )
 
@@ -344,14 +345,14 @@ def write_card(
         formats["value"],
     )
 
-    worksheet.write(start_row + 2, start_col + 3, "Dates", formats["label"])
+    worksheet.write(start_row + 2, start_col + 3, "Expires", formats["label"])
     worksheet.merge_range(
         start_row + 2,
         start_col + 4,
         start_row + 2,
         start_col + 5,
-        date_text,
-        formats["value_wrap"],
+        expires_date,
+        formats["value_center"],
     )
 
     worksheet.write(start_row + 3, start_col, "Species", formats["label"])
