@@ -6,6 +6,7 @@ import warnings
 from pathlib import Path
 from typing import Any, BinaryIO
 
+import pandas as pd
 import xlsxwriter
 import yaml
 from openpyxl import load_workbook
@@ -30,11 +31,17 @@ HEADER_NAMES = {
     "genotypes": ["genotypes", "genotype"],
     "comment": ["comment", "comments", "notes"],
     "end_date": ["end date", "setup date"],
+    "source": ["source"],
+    "protocol_num": ["protocol", "protocol number", "protocol #", "protocol num"],
+    "approved_date": ["approved", "approved date", "approval date"],
+    "expires_date": ["expires", "expires date", "expiration date", "expiry date"],
 }
 
 DEFAULT_SETTINGS = {
     "PI_name": "",
     "protocol_num": "",
+    "approved_date": "",
+    "expires_date": "",
     "contact_name": "",
     "contact_phone": "",
     "species": "Mouse",
@@ -54,8 +61,15 @@ def normalize_settings(settings: dict[str, Any] | None) -> dict[str, str]:
     return normalized
 
 
+def normalize_header(value: Any) -> str:
+    text = safe_str(value).lower()
+    text = text.replace("\n", " ").replace("\r", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
 def build_header_index(header_row: list[Any]) -> dict[str, int | None]:
-    normalized = {safe_str(v).lower(): i for i, v in enumerate(header_row) if safe_str(v)}
+    normalized = {normalize_header(v): i for i, v in enumerate(header_row) if safe_str(v)}
     out: dict[str, int | None] = {}
     for key, candidates in HEADER_NAMES.items():
         out[key] = None
@@ -84,16 +98,24 @@ def cleaned_lines(value: Any, keep_blank_lines: bool = False) -> list[str]:
     return [line.strip() for line in lines if line.strip()]
 
 
+def safe_int(value: Any, default: int = 0) -> int:
+    text = safe_str(value)
+    if not text:
+        return default
+    match = re.search(r"\d+", text)
+    return int(match.group(0)) if match else default
+
+
 def parse_mouse_lines(mouse_lines: list[str]) -> list[dict[str, str]]:
     parsed = []
     for raw in mouse_lines:
         tag = raw.split("[")[0].strip()
-        sex_match = re.search(r"\[(M|F)", raw)
-        dob_match = re.search(r"([0-1][0-9]-[0-3][0-9]-20[0-9]{2})", raw)
+        sex_match = re.search(r"\[(M|F)", raw, flags=re.IGNORECASE)
+        dob_match = re.search(r"([0-1]?[0-9][-/][0-3]?[0-9][-/](?:20)?[0-9]{2})", raw)
         parsed.append(
             {
                 "tag": tag,
-                "sex": sex_match.group(1) if sex_match else "",
+                "sex": sex_match.group(1).upper() if sex_match else "",
                 "dob": dob_match.group(1) if dob_match else "",
                 "raw": raw,
             }
@@ -262,12 +284,33 @@ def write_card(
     overflow_count = max(0, len(cage["mice"]) - MAX_MICE_PER_CAGE)
     note_text = compact_note(cage["comment"], overflow_count=overflow_count) if include_comments else ""
 
+    protocol_num = safe_str(cage.get("protocol_num")) or settings.get("protocol_num", "")
+    approved_date = safe_str(cage.get("approved_date")) or settings.get("approved_date", "")
+    expires_date = safe_str(cage.get("expires_date")) or settings.get("expires_date", "")
+
+    date_text = ""
+    if approved_date and expires_date:
+        date_text = f"Approved: {approved_date}  Expires: {expires_date}"
+    elif approved_date:
+        date_text = f"Approved: {approved_date}"
+    elif expires_date:
+        date_text = f"Expires: {expires_date}"
+
     worksheet.merge_range(
         start_row,
         start_col,
         start_row,
+        start_col + 3,
+        f"PI: {settings.get('PI_name', '')}",
+        formats["header"],
+    )
+
+    worksheet.merge_range(
+        start_row,
+        start_col + 4,
+        start_row,
         start_col + 5,
-        f"PI: {settings.get('PI_name', '')}    Protocol: {settings.get('protocol_num', '')}",
+        f"Cage #: {cage['cage_tag']}",
         formats["header"],
     )
 
@@ -276,9 +319,19 @@ def write_card(
         start_row + 1,
         start_col + 1,
         start_row + 1,
-        start_col + 5,
+        start_col + 2,
         settings.get("contact_name", ""),
         formats["value"],
+    )
+
+    worksheet.write(start_row + 1, start_col + 3, "Protocol", formats["label"])
+    worksheet.merge_range(
+        start_row + 1,
+        start_col + 4,
+        start_row + 1,
+        start_col + 5,
+        protocol_num,
+        formats["value_center"],
     )
 
     worksheet.write(start_row + 2, start_col, "Email", formats["label"])
@@ -286,9 +339,19 @@ def write_card(
         start_row + 2,
         start_col + 1,
         start_row + 2,
-        start_col + 5,
+        start_col + 2,
         settings.get("contact_phone", ""),
         formats["value"],
+    )
+
+    worksheet.write(start_row + 2, start_col + 3, "Dates", formats["label"])
+    worksheet.merge_range(
+        start_row + 2,
+        start_col + 4,
+        start_row + 2,
+        start_col + 5,
+        date_text,
+        formats["value_wrap"],
     )
 
     worksheet.write(start_row + 3, start_col, "Species", formats["label"])
@@ -300,13 +363,14 @@ def write_card(
         settings.get("species", "Mouse"),
         formats["value"],
     )
-    worksheet.write(start_row + 3, start_col + 3, "Cage #", formats["label"])
+
+    worksheet.write(start_row + 3, start_col + 3, "Source", formats["label"])
     worksheet.merge_range(
         start_row + 3,
         start_col + 4,
         start_row + 3,
         start_col + 5,
-        cage["cage_tag"],
+        cage.get("source", ""),
         formats["value_center"],
     )
 
@@ -395,19 +459,25 @@ def write_card(
             )
 
 
-def load_cages(xlsx_source: str | Path | bytes | BinaryIO) -> tuple[list[dict[str, Any]], list[str]]:
+def load_cages(xlsx_source: str | Path | bytes | BinaryIO | pd.DataFrame) -> tuple[list[dict[str, Any]], list[str]]:
     captured_warnings: list[str] = []
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        wb = load_workbook(xlsx_source, data_only=True)
 
-    for warning_obj in caught:
-        message = str(warning_obj.message)
-        if "Workbook contains no default style" not in message:
-            captured_warnings.append(message)
+    if isinstance(xlsx_source, pd.DataFrame):
+        df = xlsx_source.fillna("")
+        rows = [list(df.columns)] + df.values.tolist()
+    else:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            wb = load_workbook(xlsx_source, data_only=True)
 
-    ws = wb.active
-    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        for warning_obj in caught:
+            message = str(warning_obj.message)
+            if "Workbook contains no default style" not in message:
+                captured_warnings.append(message)
+
+        ws = wb.active
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+
     if not rows:
         return [], captured_warnings
 
@@ -426,7 +496,7 @@ def load_cages(xlsx_source: str | Path | bytes | BinaryIO) -> tuple[list[dict[st
         if not mouseline and not cage_tag:
             continue
 
-        declared_num = int(cell(raw, header_index, "num_mice", 0) or 0)
+        declared_num = safe_int(cell(raw, header_index, "num_mice", 0))
         mouse_lines = cleaned_lines(cell(raw, header_index, "mice_tags"))
         mice = parse_mouse_lines(mouse_lines)
         genotype_lines = cleaned_lines(cell(raw, header_index, "genotypes"), keep_blank_lines=True)
@@ -439,6 +509,10 @@ def load_cages(xlsx_source: str | Path | bytes | BinaryIO) -> tuple[list[dict[st
         cages.append(
             {
                 "cage_tag": cage_tag,
+                "source": safe_str(cell(raw, header_index, "source")),
+                "protocol_num": safe_str(cell(raw, header_index, "protocol_num")),
+                "approved_date": safe_str(cell(raw, header_index, "approved_date")),
+                "expires_date": safe_str(cell(raw, header_index, "expires_date")),
                 "disposition": safe_str(cell(raw, header_index, "disposition")),
                 "mouseline": mouseline,
                 "mice": mice,
@@ -451,7 +525,7 @@ def load_cages(xlsx_source: str | Path | bytes | BinaryIO) -> tuple[list[dict[st
 
 
 def build_notecards_bytes(
-    xlsx_source: str | Path | bytes | BinaryIO,
+    xlsx_source: str | Path | bytes | BinaryIO | pd.DataFrame,
     settings: dict[str, Any] | None = None,
     include_comments: bool = True,
 ) -> tuple[bytes, dict[str, Any]]:
@@ -507,7 +581,7 @@ def build_notecards_bytes(
 
 
 def build_notecards_file(
-    xlsx_source: str | Path | bytes | BinaryIO,
+    xlsx_source: str | Path | bytes | BinaryIO | pd.DataFrame,
     output_path: str | Path,
     settings: dict[str, Any] | None = None,
     include_comments: bool = True,
