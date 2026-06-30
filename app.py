@@ -144,10 +144,13 @@ def server(input: Inputs, output: Outputs, session: Session):
         try:
             df = pd.read_excel(file_info["datapath"])
             editable_df.set(ensure_editable_columns(df))
-            edit_version.set(edit_version() + 1)
+            # Do not read edit_version() inside this reactive effect. Reading and
+            # then setting the same reactive value creates a self-invalidating
+            # loop, which makes the app buffer until the server disconnects.
+            edit_version.set(0)
         except Exception as exc:
             editable_df.set(pd.DataFrame({"error": [str(exc)]}))
-            edit_version.set(edit_version() + 1)
+            edit_version.set(0)
 
     @render.data_frame
     def editable_sheet():
@@ -186,7 +189,8 @@ def server(input: Inputs, output: Outputs, session: Session):
         # generation. Avoid editable_df.set(df) here, because that re-renders the
         # whole DataGrid and can jump the user back to the top while editing.
         df.iat[patch["row_index"], patch["column_index"]] = value
-        edit_version.set(edit_version() + 1)
+        with reactive.isolate():
+            edit_version.set(edit_version() + 1)
 
         return value
 
