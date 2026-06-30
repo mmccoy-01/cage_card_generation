@@ -75,6 +75,28 @@ CARD_SLOTS = [
     (RIGHT_CARD_X, BOTTOM_CARD_Y),
 ]
 
+# Back-page slot mapping for landscape duplex printing with "flip on long edge".
+# The user's printer places backs on the opposite card horizontally within
+# each row, so we compensate by mirroring left/right on the back page.
+#
+# Front slots:
+#   0 = top-left
+#   1 = top-right
+#   2 = bottom-left
+#   3 = bottom-right
+#
+# Back page placement:
+#   front 0 cage -> back slot 1
+#   front 1 cage -> back slot 0
+#   front 2 cage -> back slot 3
+#   front 3 cage -> back slot 2
+BACK_SLOT_FOR_FRONT_SLOT = {
+    0: 1,
+    1: 0,
+    2: 3,
+    3: 2,
+}
+
 HEADER_NAMES = {
     "print_card": ["print card?", "print card", "print", "include", "selected"],
     "cage_tag": ["cage tag"],
@@ -813,18 +835,19 @@ def build_notecards_pdf_bytes(
             draw_front_card(c, slot_x, slot_y, cage, settings_norm, include_comments)
         c.showPage()
 
-        # Back page: rotate the entire back page 180 degrees for landscape
-        # long-edge duplex printing. Many printer drivers rotate landscape backs
-        # when using "flip on long edge"; pre-rotating the PDF back page makes
-        # the physical backs land behind the correct front card and read upright.
-        # The PDF preview will therefore show back pages upside down on purpose.
-        c.saveState()
-        c.translate(PAGE_W, PAGE_H)
-        c.rotate(180)
+        # Back page: mirror left/right within each row so landscape duplex
+        # printing with "flip on long edge" places each back behind the
+        # correct front card.
+        #
+        # Front page order: TL, TR, BL, BR
+        # Back page order : TR, TL, BR, BL
+        #
+        # The PDF preview will show backs horizontally swapped by row. That is
+        # intentional for this printer/duplex behavior.
         for slot_idx, cage in enumerate(group):
-            slot_x, slot_y = CARD_SLOTS[slot_idx]
+            back_slot_idx = BACK_SLOT_FOR_FRONT_SLOT[slot_idx]
+            slot_x, slot_y = CARD_SLOTS[back_slot_idx]
             draw_back_card(c, slot_x, slot_y, cage)
-        c.restoreState()
         c.showPage()
 
     c.save()
@@ -841,7 +864,7 @@ def build_notecards_pdf_bytes(
         "card_width_mm": CARD_WIDTH_MM,
         "card_height_mm": CARD_HEIGHT_MM,
         "output_format": "pdf",
-        "duplex_mode": "landscape_long_edge_back_pages_rotated_180",
+        "duplex_mode": "landscape_long_edge_back_pages_left_right_mirrored",
     }
     return output.getvalue(), metadata
 

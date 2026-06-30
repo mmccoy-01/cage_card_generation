@@ -288,7 +288,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             f"Card size: {metadata['card_width_mm']} mm wide x {metadata['card_height_mm']} mm tall.",
             f"Comments included: {'yes' if metadata['include_comments'] else 'no'}",
             "PDF layout is duplex-safe: each front page is followed by its matching back page; stock cage backs are blank.",
-            "Back pages are intentionally rotated 180 degrees so landscape long-edge duplex prints upright behind the correct card.",
+            "Back pages are intentionally mirrored left/right within each row so landscape long-edge duplex prints behind the correct front card.",
             "Print at Actual Size / 100% scale, double-sided, flip on long edge.",
         ]
 
