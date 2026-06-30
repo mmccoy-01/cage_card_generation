@@ -25,8 +25,18 @@ PRINT_LAST_COL = RIGHT_CARD_START + VISIBLE_COLS_PER_CARD - 1
 HEADER_NAMES = {
     "cage_tag": ["cage tag"],
     "num_mice": ["# of mice", "num mice", "number of mice"],
+    # SoftMouse no longer exports a Disposition column. Keep this optional
+    # alias only for backward compatibility; card status is inferred from
+    # Mating SID below.
     "disposition": ["disposition"],
-    "cage_mouseline": ["cage mouseline", "mouseline", "strain"],
+    "mating_sid": ["mating sid", "mating id", "mating", "sid"],
+    "litter_mouseline": [
+        "litter mouseline",
+        "litter mouse line",
+        "litter strain",
+        "litter line",
+    ],
+    "cage_mouseline": ["cage mouseline", "cage mouse line", "mouseline", "strain"],
     "mice_tags": ["mice tags [sex, dob, age]", "mice tags", "mouse tags"],
     "genotypes": ["genotypes", "genotype"],
     "comment": ["comment", "comments", "notes"],
@@ -63,7 +73,8 @@ def normalize_settings(settings: dict[str, Any] | None) -> dict[str, str]:
 
 def normalize_header(value: Any) -> str:
     text = safe_str(value).lower()
-    text = text.replace("\n", " ").replace("\r", " ")
+    text = text.replace("\n", " ").replace("\r", " ").replace("_", " ")
+    text = re.sub(r"^\$+\s*", "", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -483,7 +494,7 @@ def load_cages(xlsx_source: str | Path | bytes | BinaryIO | pd.DataFrame) -> tup
         return [], captured_warnings
 
     header_index = build_header_index(rows[0])
-    required_headers = ["cage_tag", "num_mice", "disposition", "cage_mouseline", "mice_tags", "genotypes"]
+    required_headers = ["cage_tag", "num_mice", "mice_tags", "genotypes"]
     missing = [name for name in required_headers if header_index.get(name) is None]
     if missing:
         raise ValueError(f"Missing required column(s): {', '.join(missing)}")
@@ -492,10 +503,21 @@ def load_cages(xlsx_source: str | Path | bytes | BinaryIO | pd.DataFrame) -> tup
     cages: list[dict[str, Any]] = []
 
     for raw in data_rows:
-        mouseline = safe_str(cell(raw, header_index, "cage_mouseline"))
         cage_tag = safe_str(cell(raw, header_index, "cage_tag"))
+        mating_sid = safe_str(cell(raw, header_index, "mating_sid"))
+        disposition = "mating" if mating_sid else "stock"
+        litter_mouseline = safe_str(cell(raw, header_index, "litter_mouseline"))
+        cage_mouseline = safe_str(cell(raw, header_index, "cage_mouseline"))
+        mouseline = litter_mouseline if disposition == "mating" else cage_mouseline
+
         if not mouseline and not cage_tag:
             continue
+
+        if not mouseline:
+            expected_column = "Litter Mouseline" if disposition == "mating" else "Cage Mouseline"
+            captured_warnings.append(
+                f"Cage {cage_tag or '(blank)'} is inferred as {disposition}, but {expected_column} is blank or missing."
+            )
 
         declared_num = safe_int(cell(raw, header_index, "num_mice", 0))
         mouse_lines = cleaned_lines(cell(raw, header_index, "mice_tags"))
@@ -514,7 +536,8 @@ def load_cages(xlsx_source: str | Path | bytes | BinaryIO | pd.DataFrame) -> tup
                 "protocol_num": safe_str(cell(raw, header_index, "protocol_num")),
                 "approved_date": safe_str(cell(raw, header_index, "approved_date")),
                 "expires_date": safe_str(cell(raw, header_index, "expires_date")),
-                "disposition": safe_str(cell(raw, header_index, "disposition")),
+                "disposition": disposition,
+                "mating_sid": mating_sid,
                 "mouseline": mouseline,
                 "mice": mice,
                 "genotypes": genotype_lines,

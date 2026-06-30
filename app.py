@@ -51,6 +51,7 @@ app_ui = ui.page_sidebar(
         ui.input_text("contact_name", "Contact name", ""),
         ui.input_text("contact_phone", "Contact email / phone", ""),
         ui.input_text("species", "Species", "Mouse"),
+        ui.input_text("source", "Source", ""),
         ui.input_checkbox("include_comments", "Include comments on cards", value=True),
         ui.hr(),
         ui.download_button("download_cards", "Download notecards.xlsx", class_="btn-primary"),
@@ -65,7 +66,7 @@ app_ui = ui.page_sidebar(
     ui.h4("Editable uploaded sheet"),
     ui.p(
         "You can edit Protocol, Approved, Expires, Source, or any other cell before downloading. "
-        "Blank per-cage values fall back to the defaults in the sidebar."
+        "Blank per-cage Protocol, Approved, Expires, or Source values fall back to the sidebar defaults."
     ),
     ui.output_data_frame("editable_sheet"),
     title="Mouse cage cards",
@@ -91,6 +92,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 "contact_name": input.contact_name(),
                 "contact_phone": input.contact_phone(),
                 "species": input.species(),
+                "source": input.source(),
             }
         )
 
