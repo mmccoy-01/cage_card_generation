@@ -3,7 +3,6 @@ import io
 import re
 import textwrap
 import warnings
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -11,25 +10,14 @@ import pandas as pd
 import xlsxwriter
 import yaml
 from openpyxl import load_workbook
-from openpyxl.utils.datetime import from_excel
 
 
 MAX_MICE_PER_CAGE = 6
 VISIBLE_COLS_PER_CARD = 6
 GUTTER_COLS = 1
-
-# Physical cage-card target: 12.7 cm length x 7.7 cm height
-# 12.7 cm is exactly 5 inches. Excel uses row heights in points and
-# xlsxwriter can set column widths in pixels. At 96 px/in, 5 in = 480 px.
-CARD_WIDTH_CM = 12.7
-CARD_HEIGHT_CM = 7.7
-CARD_WIDTH_PIXELS = round((CARD_WIDTH_CM / 2.54) * 96)
-CARD_HEIGHT_POINTS = (CARD_HEIGHT_CM / 2.54) * 72
-GUTTER_WIDTH_PIXELS = round(0.25 * 96)
-
-# The visible card uses 13 rows: 7 header/detail rows + 6 mouse rows.
-CARD_ROWS = 13
+CARD_ROWS = 14
 ROW_GAP = 2
+COL_GAP_WIDTH = 3
 ROWS_PER_SHEET = CARD_ROWS * 2 + ROW_GAP
 RIGHT_CARD_START = VISIBLE_COLS_PER_CARD + GUTTER_COLS
 PRINT_LAST_COL = RIGHT_CARD_START + VISIBLE_COLS_PER_CARD - 1
@@ -37,9 +25,10 @@ PRINT_LAST_COL = RIGHT_CARD_START + VISIBLE_COLS_PER_CARD - 1
 HEADER_NAMES = {
     "cage_tag": ["cage tag"],
     "num_mice": ["# of mice", "num mice", "number of mice"],
-    # SoftMouse no longer exports Disposition or Cage Mouseline for this workflow.
-    # Card status is inferred from mating/litter fields below.
-    "disposition": ["disposition"],  # optional backward-compatibility alias only
+    # SoftMouse no longer exports a Disposition column. Keep this optional
+    # alias only for backward compatibility; card status is inferred from
+    # Mating SID below.
+    "disposition": ["disposition"],
     "mating_sid": ["mating sid", "mating id", "mating", "sid"],
     "litter_mouseline": [
         "litter mouseline",
@@ -47,6 +36,7 @@ HEADER_NAMES = {
         "litter strain",
         "litter line",
     ],
+    "cage_mouseline": ["cage mouseline", "cage mouse line", "mouseline", "strain"],
     "mice_tags": ["mice tags [sex, dob, age]", "mice tags", "mouse tags"],
     "genotypes": ["genotypes", "genotype"],
     "comment": ["comment", "comments", "notes"],
@@ -65,7 +55,6 @@ DEFAULT_SETTINGS = {
     "contact_name": "",
     "contact_phone": "",
     "species": "Mouse",
-    "source": "",
 }
 
 
@@ -128,71 +117,33 @@ def safe_int(value: Any, default: int = 0) -> int:
     return int(match.group(0)) if match else default
 
 
-def format_date_value(value: Any) -> str:
-    """Return date-like values as YYYY-MM-DD while leaving non-dates unchanged."""
-    if value is None:
-        return ""
-
-    if isinstance(value, pd.Timestamp):
-        if pd.isna(value):
-            return ""
-        return value.strftime("%Y-%m-%d")
-
-    if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d")
-
-    if isinstance(value, date):
-        return value.strftime("%Y-%m-%d")
-
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if pd.isna(value):
-            return ""
-        # Excel serial dates are usually in this range for modern colony records.
-        if 20000 <= float(value) <= 60000:
-            try:
-                return from_excel(value).strftime("%Y-%m-%d")
-            except Exception:
-                pass
-        return safe_str(value)
-
-    text = safe_str(value)
-    if not text:
-        return ""
-
-    parsed = pd.to_datetime(text, errors="coerce")
-    if pd.notna(parsed):
-        return parsed.strftime("%Y-%m-%d")
-
-    return text
-
-
-def extract_date_text(value: str) -> str:
-    """Extract a date token from mouse-tag text and normalize it to YYYY-MM-DD."""
-    patterns = [
-        r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b",
-        r"\b\d{1,2}[-/]\d{1,2}[-/](?:\d{2}|\d{4})\b",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, value)
-        if match:
-            return format_date_value(match.group(0))
-    return ""
-
-
 def parse_mouse_lines(mouse_lines: list[str]) -> list[dict[str, str]]:
     parsed = []
     for raw in mouse_lines:
         tag = raw.split("[")[0].strip()
         sex_match = re.search(r"\[(M|F)", raw, flags=re.IGNORECASE)
+        dob_match = re.search(r"([0-1]?[0-9][-/][0-3]?[0-9][-/](?:20)?[0-9]{2})", raw)
         parsed.append(
             {
                 "tag": tag,
                 "sex": sex_match.group(1).upper() if sex_match else "",
-                "dob": extract_date_text(raw),
+                "dob": dob_match.group(1) if dob_match else "",
                 "raw": raw,
             }
         )
     return parsed
+
+
+def summarize_sex(mice: list[dict[str, str]]) -> str:
+    males = sum(1 for m in mice if m["sex"] == "M")
+    females = sum(1 for m in mice if m["sex"] == "F")
+    if males and females:
+        return f"{males}M / {females}F"
+    if males:
+        return f"{males}M"
+    if females:
+        return f"{females}F"
+    return "-"
 
 
 def compact_note(comment: str, overflow_count: int = 0) -> str:
@@ -207,53 +158,20 @@ def compact_note(comment: str, overflow_count: int = 0) -> str:
     return textwrap.shorten(" | ".join(parts), width=78, placeholder="...")
 
 
-def card_column_widths_pixels() -> list[int]:
-    """Return six column widths whose total is the 12.7 cm card width."""
-    proportions = [8, 11, 10, 8, 9, 16]
-    raw = [CARD_WIDTH_PIXELS * value / sum(proportions) for value in proportions]
-    widths = [round(value) for value in raw]
-    widths[-1] += CARD_WIDTH_PIXELS - sum(widths)
-    return widths
-
-
-def card_row_heights_points() -> list[float]:
-    """Return thirteen row heights whose total is the 7.7 cm card height."""
-    proportions = [22, 18, 18, 18, 18, 20, 18, 18, 18, 18, 18, 18, 18]
-    scale = CARD_HEIGHT_POINTS / sum(proportions)
-    heights = [value * scale for value in proportions]
-    heights[-1] += CARD_HEIGHT_POINTS - sum(heights)
-    return heights
-
-
-
-
-def set_column_width_pixels(worksheet: xlsxwriter.worksheet.Worksheet, first_col: int, last_col: int, width: int) -> None:
-    """Set a column width in pixels, with a fallback for older xlsxwriter."""
-    if hasattr(worksheet, "set_column_pixels"):
-        worksheet.set_column_pixels(first_col, last_col, width)
-    else:
-        # Older xlsxwriter only supports Excel character-width units. This is
-        # approximate, but keeps the file usable if set_column_pixels is absent.
-        worksheet.set_column(first_col, last_col, width / 7)
-
-
 def set_layout(worksheet: xlsxwriter.worksheet.Worksheet) -> None:
     worksheet.set_paper(1)  # Letter
     worksheet.set_landscape()
     worksheet.hide_gridlines(2)
     worksheet.center_horizontally()
     worksheet.set_margins(left=0.25, right=0.25, top=0.35, bottom=0.35)
+    worksheet.fit_to_pages(1, 0)
 
-    # Keep print scale at 100% so the physical card dimensions are preserved.
-    # Two 12.7 cm cards plus a 0.25 in gutter fit on letter landscape paper.
-    worksheet.set_print_scale(100)
-
-    left_widths = card_column_widths_pixels()
+    left_widths = [8, 11, 10, 8, 9, 16]
     for i, width in enumerate(left_widths):
-        set_column_width_pixels(worksheet, i, i, width)
-    set_column_width_pixels(worksheet, VISIBLE_COLS_PER_CARD, VISIBLE_COLS_PER_CARD, GUTTER_WIDTH_PIXELS)
+        worksheet.set_column(i, i, width)
+    worksheet.set_column(VISIBLE_COLS_PER_CARD, VISIBLE_COLS_PER_CARD, COL_GAP_WIDTH)
     for i, width in enumerate(left_widths, start=RIGHT_CARD_START):
-        set_column_width_pixels(worksheet, i, i, width)
+        worksheet.set_column(i, i, width)
 
 
 def build_formats(workbook: xlsxwriter.Workbook) -> dict[str, xlsxwriter.format.Format]:
@@ -366,7 +284,7 @@ def write_card(
     formats: dict[str, xlsxwriter.format.Format],
     include_comments: bool,
 ) -> None:
-    row_heights = card_row_heights_points()
+    row_heights = [22, 18, 18, 18, 18, 18, 20, 18, 18, 18, 18, 18, 18, 18]
     for offset, height in enumerate(row_heights):
         worksheet.set_row(start_row + offset, height)
 
@@ -378,10 +296,8 @@ def write_card(
     note_text = compact_note(cage["comment"], overflow_count=overflow_count) if include_comments else ""
 
     protocol_num = safe_str(cage.get("protocol_num")) or settings.get("protocol_num", "")
-    approved_date = format_date_value(cage.get("approved_date")) or format_date_value(settings.get("approved_date", ""))
-    expires_date = format_date_value(cage.get("expires_date")) or format_date_value(settings.get("expires_date", ""))
-    source = safe_str(cage.get("source")) or settings.get("source", "")
-    litter_mouseline = safe_str(cage.get("litter_mouseline"))
+    approved_date = safe_str(cage.get("approved_date")) or settings.get("approved_date", "")
+    expires_date = safe_str(cage.get("expires_date")) or settings.get("expires_date", "")
 
     worksheet.merge_range(
         start_row,
@@ -466,57 +382,56 @@ def write_card(
         start_col + 4,
         start_row + 3,
         start_col + 5,
-        source,
+        cage.get("source", ""),
         formats["value_center"],
     )
 
-    worksheet.write(start_row + 4, start_col, "Status", formats["label"])
+    worksheet.write(start_row + 4, start_col, "Strain", formats["label"])
     worksheet.merge_range(
         start_row + 4,
         start_col + 1,
         start_row + 4,
+        start_col + 5,
+        cage["mouseline"],
+        formats["value_wrap"],
+    )
+
+    worksheet.write(start_row + 5, start_col, "Status", formats["label"])
+    worksheet.merge_range(
+        start_row + 5,
+        start_col + 1,
+        start_row + 5,
         start_col + 2,
         disposition.upper(),
         status_fmt,
     )
-
-    if disposition.lower() == "mating":
-        litter_text = f"Litter Mouseline: {litter_mouseline}" if litter_mouseline else "Litter Mouseline:"
-        worksheet.merge_range(
-            start_row + 4,
-            start_col + 3,
-            start_row + 4,
-            start_col + 5,
-            litter_text,
-            formats["value_wrap"],
-        )
-    else:
-        worksheet.merge_range(
-            start_row + 4,
-            start_col + 3,
-            start_row + 4,
-            start_col + 5,
-            "",
-            formats["value"],
-        )
-
-    worksheet.write(start_row + 5, start_col, "Notes", formats["label"])
+    worksheet.write(start_row + 5, start_col + 3, "Sex", formats["label"])
     worksheet.merge_range(
         start_row + 5,
-        start_col + 1,
+        start_col + 4,
         start_row + 5,
+        start_col + 5,
+        summarize_sex(visible_mice),
+        formats["value_center"],
+    )
+
+    worksheet.write(start_row + 6, start_col, "Notes", formats["label"])
+    worksheet.merge_range(
+        start_row + 6,
+        start_col + 1,
+        start_row + 6,
         start_col + 5,
         note_text,
         formats["note"],
     )
 
-    worksheet.write(start_row + 6, start_col + 0, "Tag", formats["table_head"])
-    worksheet.write(start_row + 6, start_col + 1, "DOB", formats["table_head"])
-    worksheet.write(start_row + 6, start_col + 2, "Sex", formats["table_head"])
+    worksheet.write(start_row + 7, start_col + 0, "Tag", formats["table_head"])
+    worksheet.write(start_row + 7, start_col + 1, "DOB", formats["table_head"])
+    worksheet.write(start_row + 7, start_col + 2, "Sex", formats["table_head"])
     worksheet.merge_range(
-        start_row + 6,
+        start_row + 7,
         start_col + 3,
-        start_row + 6,
+        start_row + 7,
         start_col + 5,
         "Genotype",
         formats["table_head"],
@@ -527,7 +442,7 @@ def write_card(
         genotype_lines.extend([""] * (len(cage["mice"]) - len(genotype_lines)))
 
     for i in range(MAX_MICE_PER_CAGE):
-        row = start_row + 7 + i
+        row = start_row + 8 + i
         if i < len(visible_mice):
             mouse = visible_mice[i]
             genotype = genotype_lines[i] if i < len(genotype_lines) else ""
@@ -590,21 +505,24 @@ def load_cages(xlsx_source: str | Path | bytes | BinaryIO | pd.DataFrame) -> tup
     for raw in data_rows:
         cage_tag = safe_str(cell(raw, header_index, "cage_tag"))
         mating_sid = safe_str(cell(raw, header_index, "mating_sid"))
+        disposition = "mating" if mating_sid else "stock"
         litter_mouseline = safe_str(cell(raw, header_index, "litter_mouseline"))
-        disposition = "mating" if mating_sid or litter_mouseline else "stock"
+        cage_mouseline = safe_str(cell(raw, header_index, "cage_mouseline"))
+        mouseline = litter_mouseline if disposition == "mating" else cage_mouseline
+
+        if not mouseline and not cage_tag:
+            continue
+
+        if not mouseline:
+            expected_column = "Litter Mouseline" if disposition == "mating" else "Cage Mouseline"
+            captured_warnings.append(
+                f"Cage {cage_tag or '(blank)'} is inferred as {disposition}, but {expected_column} is blank or missing."
+            )
 
         declared_num = safe_int(cell(raw, header_index, "num_mice", 0))
         mouse_lines = cleaned_lines(cell(raw, header_index, "mice_tags"))
         mice = parse_mouse_lines(mouse_lines)
         genotype_lines = cleaned_lines(cell(raw, header_index, "genotypes"), keep_blank_lines=True)
-
-        if not any([cage_tag, mating_sid, litter_mouseline, mouse_lines, genotype_lines]):
-            continue
-
-        if disposition == "mating" and not litter_mouseline:
-            captured_warnings.append(
-                f"Cage {cage_tag or '(blank)'} has mating information, but Litter Mouseline is blank or missing."
-            )
 
         if declared_num and declared_num != len(mice):
             captured_warnings.append(
@@ -620,7 +538,7 @@ def load_cages(xlsx_source: str | Path | bytes | BinaryIO | pd.DataFrame) -> tup
                 "expires_date": safe_str(cell(raw, header_index, "expires_date")),
                 "disposition": disposition,
                 "mating_sid": mating_sid,
-                "litter_mouseline": litter_mouseline,
+                "mouseline": mouseline,
                 "mice": mice,
                 "genotypes": genotype_lines,
                 "comment": safe_str(cell(raw, header_index, "comment")),

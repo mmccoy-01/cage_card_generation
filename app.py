@@ -7,18 +7,6 @@ from shiny.types import FileInfo
 from notecard import build_notecards_bytes, normalize_settings
 
 
-PRINT_COLUMN = "Print Card?"
-PRINT_COLUMN_ALIASES = [
-    "print card?",
-    "print card",
-    "print?",
-    "print",
-    "include card?",
-    "include card",
-    "include?",
-    "include",
-]
-
 EDITABLE_EXTRA_COLUMNS = {
     "Protocol": ["protocol", "protocol number", "protocol #", "protocol num"],
     "Approved": ["approved", "approved date", "approval date"],
@@ -28,89 +16,22 @@ EDITABLE_EXTRA_COLUMNS = {
 
 
 def _normalized_column_name(value: object) -> str:
-    text = str(value).strip().lower().replace("_", " ")
-    text = text.lstrip("$").strip()
-    return " ".join(text.split())
-
-
-def _coerce_print_value(value: object, default: bool = True) -> bool:
-    if value is None:
-        return default
-
-    try:
-        if pd.isna(value):
-            return default
-    except TypeError:
-        pass
-
-    if isinstance(value, bool):
-        return value
-
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return bool(value)
-
-    text = str(value).strip().lower()
-    if not text:
-        return default
-
-    if text in {"true", "t", "yes", "y", "1", "x", "checked", "print", "include", "selected"}:
-        return True
-    if text in {"false", "f", "no", "n", "0", "unchecked", "skip", "exclude", "omit"}:
-        return False
-
-    return default
+    return " ".join(str(value).strip().lower().split())
 
 
 def ensure_editable_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add app-specific editable columns if the uploaded workbook does not
+    Add editable card-specific columns if the uploaded workbook does not
     already contain an equivalent column.
     """
     df = df.copy()
-
-    normalized_to_original = {_normalized_column_name(col): col for col in df.columns}
-
-    print_col = None
-    for alias in PRINT_COLUMN_ALIASES:
-        if alias in normalized_to_original:
-            print_col = normalized_to_original[alias]
-            break
-
-    if print_col is None:
-        df.insert(0, PRINT_COLUMN, True)
-    else:
-        if print_col != PRINT_COLUMN:
-            df = df.rename(columns={print_col: PRINT_COLUMN})
-
-        # Keep the checkbox/toggle column at the far left even if the uploaded
-        # workbook already had an equivalent print/include column elsewhere.
-        remaining_cols = [col for col in df.columns if col != PRINT_COLUMN]
-        df = df[[PRINT_COLUMN, *remaining_cols]]
-
     existing = {_normalized_column_name(col) for col in df.columns}
+
     for canonical_name, aliases in EDITABLE_EXTRA_COLUMNS.items():
         if not any(alias in existing for alias in aliases):
             df[canonical_name] = ""
 
-    df = df.fillna("")
-
-    # Store this as real boolean dtype so Shiny renders it as a checkbox-style
-    # editable column instead of plain TRUE/FALSE text.
-    df[PRINT_COLUMN] = (
-        df[PRINT_COLUMN]
-        .apply(lambda value: _coerce_print_value(value, default=True))
-        .astype(bool)
-    )
-    return df
-
-
-def selected_rows_for_print(df: pd.DataFrame) -> pd.DataFrame:
-    """Return only rows selected for printing; remove the UI-only toggle column."""
-    if df.empty or PRINT_COLUMN not in df.columns:
-        return df.copy()
-
-    mask = df[PRINT_COLUMN].apply(lambda value: _coerce_print_value(value, default=True))
-    return df.loc[mask].drop(columns=[PRINT_COLUMN], errors="ignore").copy()
+    return df.fillna("")
 
 
 app_ui = ui.page_sidebar(
@@ -138,16 +59,14 @@ app_ui = ui.page_sidebar(
     ),
     ui.h2("Mouse cage card generator"),
     ui.p(
-        "Upload a SoftMouse workbook, choose which cages to print, edit the table if needed, "
-        "and download a print-ready notecards.xlsx file."
+        "Upload a SoftMouse workbook, edit the table if needed, and download a print-ready notecards.xlsx file."
     ),
     ui.h4("Status"),
     ui.output_text_verbatim("status"),
     ui.h4("Editable uploaded sheet"),
     ui.p(
-        "Use the leftmost Print Card? checkbox column to select/deselect cages; all rows "
-        "start selected by default. Blank per-cage Protocol, Approved, Expires, or Source "
-        "values fall back to the sidebar defaults."
+        "You can edit Protocol, Approved, Expires, Source, or any other cell before downloading. "
+        "Blank per-cage Protocol, Approved, Expires, or Source values fall back to the sidebar defaults."
     ),
     ui.output_data_frame("editable_sheet"),
     title="Mouse cage cards",
@@ -156,12 +75,6 @@ app_ui = ui.page_sidebar(
 
 def server(input: Inputs, output: Outputs, session: Session):
     editable_df: reactive.Value[pd.DataFrame] = reactive.Value(pd.DataFrame())
-    edit_version: reactive.Value[int] = reactive.Value(0)
-    edit_version_counter = {"value": 0}
-
-    def bump_edit_version() -> None:
-        edit_version_counter["value"] += 1
-        edit_version.set(edit_version_counter["value"])
 
     @reactive.calc
     def uploaded_file() -> FileInfo | None:
@@ -189,16 +102,13 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         if file_info is None:
             editable_df.set(pd.DataFrame())
-            bump_edit_version()
             return
 
         try:
             df = pd.read_excel(file_info["datapath"])
             editable_df.set(ensure_editable_columns(df))
-            bump_edit_version()
         except Exception as exc:
             editable_df.set(pd.DataFrame({"error": [str(exc)]}))
-            bump_edit_version()
 
     @render.data_frame
     def editable_sheet():
@@ -223,21 +133,14 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @editable_sheet.set_patch_fn
     def _update_editable_sheet(patch):
-        df = editable_df()
+        df = editable_df().copy()
 
         if df.empty or "error" in df.columns:
             return patch["value"]
 
-        col_name = df.columns[patch["column_index"]]
-        if col_name == PRINT_COLUMN:
-            value = _coerce_print_value(patch["value"], default=False)
-        else:
-            value = "" if patch["value"] is None else patch["value"]
-
-        # Mutate in place instead of resetting the whole dataframe. This keeps the
-        # displayed grid from jumping back to the top after each edit.
+        value = "" if patch["value"] is None else patch["value"]
         df.iat[patch["row_index"], patch["column_index"]] = value
-        bump_edit_version()
+        editable_df.set(df)
 
         return value
 
@@ -248,7 +151,6 @@ def server(input: Inputs, output: Outputs, session: Session):
             return None
 
         df = editable_df()
-        edit_version()  # Recompute after cell edits without forcing a grid redraw.
         if df.empty:
             return None
 
@@ -256,14 +158,11 @@ def server(input: Inputs, output: Outputs, session: Session):
             return {"content": None, "metadata": None, "error": str(df["error"].iloc[0])}
 
         try:
-            selected_df = selected_rows_for_print(df)
             content, metadata = build_notecards_bytes(
-                xlsx_source=selected_df,
+                xlsx_source=df,
                 settings=settings(),
                 include_comments=input.include_comments(),
             )
-            metadata["num_uploaded_rows"] = int(len(df))
-            metadata["num_selected_rows"] = int(len(selected_df))
             return {"content": content, "metadata": metadata, "error": None}
         except Exception as exc:
             return {"content": None, "metadata": None, "error": str(exc)}
@@ -285,8 +184,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         assert isinstance(metadata, dict)
 
         lines = [
-            f"Ready: {metadata['num_cards']} selected card(s), about {metadata['num_pages']} page(s).",
-            f"Selected rows: {metadata.get('num_selected_rows', metadata['num_cards'])} of {metadata.get('num_uploaded_rows', metadata['num_cards'])}",
+            f"Ready: {metadata['num_cards']} card(s), about {metadata['num_pages']} page(s).",
             f"Comments included: {'yes' if metadata['include_comments'] else 'no'}",
             "Using edited table values.",
         ]
