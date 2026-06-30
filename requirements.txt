@@ -3,3 +3,4 @@ pandas
 openpyxl
 PyYAML
 reportlab
+xlsxwriter
