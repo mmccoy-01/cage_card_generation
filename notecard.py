@@ -263,7 +263,7 @@ def set_column_widths(worksheet: xlsxwriter.worksheet.Worksheet) -> None:
     card_col_widths_px = [64, 78, 64, 72, 78, 124]
     for i, width in enumerate(card_col_widths_px):
         worksheet.set_column_pixels(i, i, width)
-    worksheet.set_column_pixels(VISIBLE_COLS_PER_CARD, VISIBLE_COLS_PER_CARD, 29)
+    worksheet.set_column_pixels(VISIBLE_COLS_PER_CARD, VISIBLE_COLS_PER_CARD, 12)
     for i, width in enumerate(card_col_widths_px, start=RIGHT_CARD_START):
         worksheet.set_column_pixels(i, i, width)
 
@@ -281,8 +281,11 @@ def set_layout(worksheet: xlsxwriter.worksheet.Worksheet) -> None:
     worksheet.set_landscape()
     worksheet.hide_gridlines(2)
     worksheet.center_horizontally()
-    worksheet.set_margins(left=0.25, right=0.25, top=0.25, bottom=0.25)
-    worksheet.set_print_scale(100)
+    worksheet.set_margins(left=0.15, right=0.15, top=0.15, bottom=0.15)
+    # Keep the two-card-wide layout on one printed page. This prevents Excel
+    # from splitting/clipping the right card when a printer has non-printable
+    # hardware margins or when the user changes margin presets in print preview.
+    worksheet.fit_to_pages(1, 0)
     set_column_widths(worksheet)
 
 
@@ -488,8 +491,6 @@ def write_card(
 
     worksheet.write(start_row + 4, start_col, "Status", formats["label"])
     status_text = disposition.upper()
-    if disposition.lower() == "mating" and safe_str(cage.get("mating_sid")):
-        status_text = f"MATING #{safe_str(cage.get('mating_sid'))}"
     worksheet.merge_range(start_row + 4, start_col + 1, start_row + 4, start_col + 2, status_text, status_fmt)
 
     if disposition.lower() == "mating":
@@ -548,14 +549,12 @@ def write_mating_back_card(
 
     mating_info = cage.get("mating_info") or {}
     cage_tag = safe_str(cage.get("cage_tag"))
-    mating_sid = safe_str(cage.get("mating_sid"))
-
     worksheet.merge_range(
         start_row,
         start_col,
         start_row,
         start_col + 5,
-        f"Mating Info Back | Cage {cage_tag} | SID {mating_sid}",
+        f"Mating Info Back | Cage {cage_tag}",
         formats["back_header"],
     )
 
@@ -571,11 +570,10 @@ def write_mating_back_card(
         return
 
     rows = [
-        ("Litter Line", _back_field(mating_info, "litter_mouseline"), "Setup", _back_field(mating_info, "setup_date")),
-        ("Mating Cage", _back_field(mating_info, "mating_cage_tag"), "# Litters", _back_field(mating_info, "num_litters")),
+        ("Litter Line", _back_field(mating_info, "litter_mouseline"), "# Litters", _back_field(mating_info, "num_litters")),
+        ("Mating Cage", _back_field(mating_info, "mating_cage_tag"), "", ""),
         ("Sire Tag", _back_field(mating_info, "sire_tag"), "Dam Tag", _back_field(mating_info, "dam_tag")),
         ("Sire Genotype", _back_field(mating_info, "sire_genotype"), "Dam Genotype", _back_field(mating_info, "dam_genotype")),
-        ("F Mate Date", _back_field(mating_info, "female_mate_date"), "Since Setup", _back_field(mating_info, "since_setup")),
     ]
 
     for offset, (label1, value1, label2, value2) in enumerate(rows, start=1):
