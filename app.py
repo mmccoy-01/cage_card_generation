@@ -4,11 +4,8 @@ import pandas as pd
 from shiny import App, Inputs, Outputs, Session, reactive, render, req, ui
 from shiny.types import FileInfo
 
-from notecard import build_notecards_bytes, normalize_settings, should_print_card
+from notecard import PRINT_COLUMN, build_notecards_pdf_bytes, normalize_settings, safe_bool
 
-
-PRINT_CARD_COLUMN = "Print Card?"
-PRINT_CARD_ALIASES = ["print card?", "print card", "print", "include", "include card", "selected"]
 
 EDITABLE_EXTRA_COLUMNS = {
     "Protocol": ["protocol", "protocol number", "protocol #", "protocol num"],
@@ -19,39 +16,36 @@ EDITABLE_EXTRA_COLUMNS = {
 
 
 def _normalized_column_name(value: object) -> str:
-    return " ".join(str(value).strip().lower().replace("_", " ").split())
-
-
-def _find_equivalent_column(df: pd.DataFrame, aliases: list[str]) -> str | None:
-    normalized_aliases = {_normalized_column_name(alias) for alias in aliases}
-    for col in df.columns:
-        if _normalized_column_name(col) in normalized_aliases:
-            return str(col)
-    return None
+    return " ".join(str(value).strip().lower().split())
 
 
 def ensure_editable_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add editable card-specific columns if the uploaded workbook does not
-    already contain equivalent columns. Print Card? is always kept as the
-    far-left boolean column so Shiny renders it as checkbox-style values.
+    Add app-specific editable columns if the uploaded workbook does not already
+    contain equivalent columns. Print Card? is intentionally first and defaults
+    to True so users uncheck cages they do not want to print.
     """
     df = df.copy().fillna("")
+    normalized_to_actual = {_normalized_column_name(col): col for col in df.columns}
 
-    existing_print_col = _find_equivalent_column(df, PRINT_CARD_ALIASES)
+    existing_print_col = None
+    for candidate in ["print card?", "print card", "print", "include", "selected"]:
+        if candidate in normalized_to_actual:
+            existing_print_col = normalized_to_actual[candidate]
+            break
+
     if existing_print_col is None:
-        df.insert(0, PRINT_CARD_COLUMN, True)
+        df.insert(0, PRINT_COLUMN, True)
     else:
-        df[existing_print_col] = df[existing_print_col].map(should_print_card).astype(bool)
-        if existing_print_col != PRINT_CARD_COLUMN:
-            df = df.rename(columns={existing_print_col: PRINT_CARD_COLUMN})
-        # Move Print Card? to the far left.
-        cols = [PRINT_CARD_COLUMN] + [col for col in df.columns if col != PRINT_CARD_COLUMN]
+        df[existing_print_col] = df[existing_print_col].map(lambda value: safe_bool(value, default=True)).astype(bool)
+        if existing_print_col != PRINT_COLUMN:
+            df = df.rename(columns={existing_print_col: PRINT_COLUMN})
+        cols = [PRINT_COLUMN] + [col for col in df.columns if col != PRINT_COLUMN]
         df = df[cols]
 
     existing = {_normalized_column_name(col) for col in df.columns}
     for canonical_name, aliases in EDITABLE_EXTRA_COLUMNS.items():
-        if not any(_normalized_column_name(alias) in existing for alias in aliases):
+        if not any(alias in existing for alias in aliases):
             df[canonical_name] = ""
 
     return df
@@ -83,20 +77,20 @@ app_ui = ui.page_sidebar(
         ui.input_text("source", "Source", ""),
         ui.input_checkbox("include_comments", "Include comments on cards", value=True),
         ui.hr(),
-        ui.download_button("download_cards", "Download notecards.xlsx", class_="btn-primary"),
-        width=380,
+        ui.download_button("download_cards", "Download notecards.pdf", class_="btn-primary"),
+        width=360,
     ),
     ui.h2("Mouse cage card generator"),
     ui.p(
         "Upload a cage workbook, optionally upload a mating workbook, edit the table if needed, "
-        "uncheck cages you do not want to print, and download a print-ready notecards.xlsx file."
+        "uncheck cages you do not want to print, and download a print-ready PDF."
     ),
     ui.h4("Status"),
     ui.output_text_verbatim("status"),
     ui.h4("Editable uploaded cage sheet"),
     ui.p(
-        "Use the Print Card? checkbox column to select/deselect cages. "
-        "Blank per-cage Protocol, Approved, Expires, or Source values fall back to the sidebar defaults."
+        "Use the Print Card? checkbox column to select/deselect cages. Blank per-cage Protocol, "
+        "Approved, Expires, or Source values fall back to the sidebar defaults."
     ),
     ui.output_data_frame("editable_sheet"),
     title="Mouse cage cards",
@@ -138,15 +132,11 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         if file_info is None:
             editable_df.set(pd.DataFrame())
-            edit_version.set(0)
             return
 
         try:
             df = pd.read_excel(file_info["datapath"])
             editable_df.set(ensure_editable_columns(df))
-            # Do not read edit_version() inside this reactive effect. Reading and
-            # then setting the same reactive value creates a self-invalidating
-            # loop, which makes the app buffer until the server disconnects.
             edit_version.set(0)
         except Exception as exc:
             editable_df.set(pd.DataFrame({"error": [str(exc)]}))
@@ -180,17 +170,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         if df.empty or "error" in df.columns:
             return patch["value"]
 
-        col_name = df.columns[patch["column_index"]]
         value = "" if patch["value"] is None else patch["value"]
-        if col_name == PRINT_CARD_COLUMN:
-            value = should_print_card(value)
+        col_name = df.columns[patch["column_index"]]
+        if col_name == PRINT_COLUMN:
+            value = safe_bool(value, default=True)
 
-        # Mutate the backing dataframe in place and only invalidate downstream
-        # generation. Avoid editable_df.set(df) here, because that re-renders the
-        # whole DataGrid and can jump the user back to the top while editing.
+        # Mutate in place and invalidate downstream generation without forcing
+        # the whole DataGrid to rebuild after every edit.
         df.iat[patch["row_index"], patch["column_index"]] = value
-        with reactive.isolate():
-            edit_version.set(edit_version() + 1)
+        edit_version.set(edit_version() + 1)
 
         return value
 
@@ -200,21 +188,20 @@ def server(input: Inputs, output: Outputs, session: Session):
         if file_info is None:
             return None
 
+        _ = edit_version()
         df = editable_df()
-        edit_version()
         if df.empty:
             return None
 
         if "error" in df.columns:
             return {"content": None, "metadata": None, "error": str(df["error"].iloc[0])}
 
-        mating_file_info = uploaded_mating_file()
-        mating_source = None if mating_file_info is None else mating_file_info["datapath"]
-
         try:
-            content, metadata = build_notecards_bytes(
+            mating_info = uploaded_mating_file()
+            mating_source = mating_info["datapath"] if mating_info is not None else None
+            content, metadata = build_notecards_pdf_bytes(
                 xlsx_source=df,
-                mating_xlsx_source=mating_source,
+                mating_source=mating_source,
                 settings=settings(),
                 include_comments=input.include_comments(),
             )
@@ -226,7 +213,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     def status() -> str:
         file_info = uploaded_file()
         if file_info is None:
-            return "Upload a cage .xlsx file to begin. Upload a mating .xlsx file only if you want sire/dam backs."
+            return "Upload a cage .xlsx file to begin."
 
         result = generation_result()
         if result is None:
@@ -239,24 +226,12 @@ def server(input: Inputs, output: Outputs, session: Session):
         assert isinstance(metadata, dict)
 
         lines = [
-            f"Ready: {metadata['num_cards']} selected card(s), {metadata['num_pages']} physical print page(s).",
-            f"Front pages: {metadata['num_front_pages']}",
+            f"Ready: {metadata['num_cards']} card(s) in a {metadata['num_pages']}-page PDF.",
+            f"Card size: {metadata['card_width_mm']} mm wide x {metadata['card_height_mm']} mm tall.",
             f"Comments included: {'yes' if metadata['include_comments'] else 'no'}",
-            "Using edited table values.",
+            "PDF layout is duplex-safe: each front page is followed by its matching back page; stock cage backs are blank.",
+            "Print at Actual Size / 100% scale, double-sided, flip on long edge.",
         ]
-
-        if metadata.get("duplex_back_cards"):
-            lines.extend(
-                [
-                    "Mating backs: enabled. Front pages alternate with matching back pages for duplex printing.",
-                    "Stock cage backs are left blank so the next cage front will not print behind them.",
-                    f"Mating records loaded: {metadata['mating_records_loaded']}",
-                    f"Mating records matched to selected cages: {metadata['matched_mating_records']}",
-                    "Printer note: choose double-sided printing in the print dialog; Excel files cannot reliably force that printer setting on every computer.",
-                ]
-            )
-        else:
-            lines.append("Mating backs: disabled because no mating workbook is uploaded.")
 
         warnings_list = metadata.get("warnings", [])
         if warnings_list:
@@ -265,7 +240,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         return "\n".join(lines)
 
-    @render.download(filename="notecards.xlsx")
+    @render.download(filename="notecards.pdf", media_type="application/pdf")
     def download_cards():
         result = generation_result()
         req(result is not None)
