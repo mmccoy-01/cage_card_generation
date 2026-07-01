@@ -76,8 +76,15 @@ CARD_SLOTS = [
 ]
 
 # Back-page slot mapping for landscape duplex printing with "flip on long edge".
-# The user's printer places backs on the opposite card horizontally within
-# each row, so we compensate by mirroring left/right on the back page.
+#
+# The printed tests showed two separate duplex effects:
+#   1. An upright PDF back page prints upside down on the physical card.
+#   2. A normal slot order pairs each front with the neighboring card's back.
+#
+# Therefore the back page must be generated as an intentionally upside-down
+# page AND the logical draw slots must be vertically swapped before that
+# rotation. After the printer flips on the long edge, each physical card ends
+# up upright and paired with its own back.
 #
 # Front slots:
 #   0 = top-left
@@ -85,16 +92,16 @@ CARD_SLOTS = [
 #   2 = bottom-left
 #   3 = bottom-right
 #
-# Back page placement:
-#   front 0 cage -> back slot 1
-#   front 1 cage -> back slot 0
-#   front 2 cage -> back slot 3
-#   front 3 cage -> back slot 2
+# Draw placement before the page-level 180-degree rotation:
+#   front 0 cage -> draw in slot 2
+#   front 1 cage -> draw in slot 3
+#   front 2 cage -> draw in slot 0
+#   front 3 cage -> draw in slot 1
 BACK_SLOT_FOR_FRONT_SLOT = {
-    0: 1,
-    1: 0,
-    2: 3,
-    3: 2,
+    0: 2,
+    1: 3,
+    2: 0,
+    3: 1,
 }
 
 HEADER_NAMES = {
@@ -835,19 +842,19 @@ def build_notecards_pdf_bytes(
             draw_front_card(c, slot_x, slot_y, cage, settings_norm, include_comments)
         c.showPage()
 
-        # Back page: mirror left/right within each row so landscape duplex
-        # printing with "flip on long edge" places each back behind the
-        # correct front card.
-        #
-        # Front page order: TL, TR, BL, BR
-        # Back page order : TR, TL, BR, BL
-        #
-        # The PDF preview will show backs horizontally swapped by row. That is
-        # intentional for this printer/duplex behavior.
+        # Back page: draw into duplex-compensated logical slots, then rotate
+        # the whole page 180 degrees. In the PDF preview, back pages should
+        # look upside down. That is intentional: with landscape, double-sided,
+        # flip on long edge, the printer turns them upright and places each
+        # back behind the correct front card.
+        c.saveState()
+        c.translate(PAGE_W, PAGE_H)
+        c.rotate(180)
         for slot_idx, cage in enumerate(group):
             back_slot_idx = BACK_SLOT_FOR_FRONT_SLOT[slot_idx]
             slot_x, slot_y = CARD_SLOTS[back_slot_idx]
             draw_back_card(c, slot_x, slot_y, cage)
+        c.restoreState()
         c.showPage()
 
     c.save()
@@ -864,7 +871,7 @@ def build_notecards_pdf_bytes(
         "card_width_mm": CARD_WIDTH_MM,
         "card_height_mm": CARD_HEIGHT_MM,
         "output_format": "pdf",
-        "duplex_mode": "landscape_long_edge_back_pages_left_right_mirrored",
+        "duplex_mode": "landscape_long_edge_back_pages_rotated_180_with_vertical_slot_swap",
     }
     return output.getvalue(), metadata
 
