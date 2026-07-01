@@ -1,26 +1,51 @@
 # Mouse Cage Card Generator
 
-A small Shiny for Python app that converts a SoftMouse `.xlsx` export into a printable `notecards.xlsx` file for cage cards. Inspired by https://github.com/mfe7/mouse_cage_cards
+A Shiny for Python app that converts SoftMouse `.xlsx` exports into print-ready PDF cage cards.
 
-To run online: visit [posit connect cloud link](https://019d274e-8c19-ccbd-b9f6-2762e561ccd9.share.connect.posit.cloud/)
+Inspired by [`mfe7/mouse_cage_cards`](https://github.com/mfe7/mouse_cage_cards).
 
-## What it does
+Live app: [Posit Connect Cloud](https://019d274e-8c19-ccbd-b9f6-2762e561ccd9.share.connect.posit.cloud/)
 
-- Upload a SoftMouse Excel sheet
-- Enter cage-card settings in the app:
-  - PI name
-  - protocol number
-  - contact name
-  - contact phone
-  - species
-- Choose whether to include comments
-- Download a formatted Excel file of printable cage cards
+## Features
+
+- Upload a SoftMouse cage workbook `.xlsx`
+- Optionally upload a SoftMouse mating workbook `.xlsx` to add sire/dam information on card backs
+- Select or deselect cages using the `Print Card?` column
+- Edit uploaded cage data directly in the app before printing
+- Download a print-ready PDF
+- Prints 4 cage cards per page
+- Sorts mating cages first, then stock cages
+- Adds mating cage back cards with sire, dam, genotype, litter line, and litter history
+- Leaves stock cage backs blank for duplex-safe printing
+- Normalizes dates to `YYYY-MM-DD`
+- Supports sidebar defaults for PI, protocol, approval/expiration dates, contact info, species, and source
+
+## Printing
+
+The generated PDF is designed for duplex printing. Use these print settings:
+
+```text
+Scale: Actual Size / 100%
+Double-sided: On
+Flip: Long edge
+````
 
 ## Files
 
-- `app.py` — Shiny app
-- `notecard.py` — cage-card generation logic
-- `requirements.txt` — Python dependencies
+* `app.py` — Shiny app interface and upload workflow
+* `notecard.py` — PDF cage-card generation logic
+* `requirements.txt` — Python dependencies
+
+## Requirements
+
+```txt
+shiny
+pandas
+openpyxl
+PyYAML
+reportlab
+xlsxwriter
+```
 
 ## Run locally
 
