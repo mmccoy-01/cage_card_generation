@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import importlib
+import math
+import re
 
 import pandas as pd
+from openpyxl import load_workbook
 from shiny import App, Inputs, Outputs, Session, reactive, render, req, ui
 from shiny.types import FileInfo
 
 
 PRINT_COLUMN = "Print Card?"
+BARCODE_COLUMN_ALIASES = {"cage barcode", "cage barcode value"}
 
 EDITABLE_EXTRA_COLUMNS = {
     "Protocol": ["protocol", "protocol number", "protocol #", "protocol num"],
@@ -63,6 +67,112 @@ def normalize_settings_local(settings: dict[str, object] | None) -> dict[str, st
 
 def _normalized_column_name(value: object) -> str:
     return " ".join(str(value).strip().lower().split())
+
+
+def _is_barcode_column(value: object) -> bool:
+    return _normalized_column_name(value) in BARCODE_COLUMN_ALIASES
+
+
+def _format_excel_barcode(value: object, number_format: object) -> str:
+    """Return a barcode exactly as it should appear in the editable grid.
+
+    Excel can store a barcode as the number 1234 while displaying 001234 by
+    applying the custom number format 000000. pandas.read_excel() returns the
+    underlying 1234, so this function reapplies the leading-zero portion of
+    Excel's number format before the value reaches the Shiny DataGrid.
+    """
+    if value is None:
+        return ""
+
+    if isinstance(value, str):
+        return value.strip()
+
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+
+    if isinstance(value, bool):
+        return str(value)
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        numeric_value = float(value)
+        if not math.isfinite(numeric_value):
+            return ""
+
+        if numeric_value.is_integer():
+            digits = str(int(numeric_value))
+            format_text = str(number_format or "General").split(";", 1)[0]
+
+            # Remove Excel color/condition markers, quoted literals, escaped
+            # characters, spacing directives, and fill directives. For a
+            # barcode format such as 000000 this leaves the zero placeholders.
+            format_text = re.sub(r"\[[^\]]*\]", "", format_text)
+            format_text = re.sub(r'"[^"]*"', "", format_text)
+            format_text = re.sub(r"\\.", "", format_text)
+            format_text = re.sub(r"_[^ ]?", "", format_text)
+            format_text = re.sub(r"\*[^ ]?", "", format_text)
+            compact_format = re.sub(r"\s+", "", format_text)
+
+            # Only interpret simple identifier-like number formats here. This
+            # avoids treating date, decimal, percentage, or scientific formats
+            # as barcode padding instructions.
+            if (
+                compact_format
+                and re.fullmatch(r"[0#?()\-/]+", compact_format)
+                and "0" in compact_format
+            ):
+                minimum_digits = compact_format.count("0")
+                if minimum_digits > len(digits):
+                    digits = digits.zfill(minimum_digits)
+
+            return digits
+
+        return str(value).strip()
+
+    return safe_str(value)
+
+
+def read_editable_cage_workbook(path: str) -> pd.DataFrame:
+    """Read the cage workbook while preserving displayed barcode zeros.
+
+    pandas remains responsible for the normal spreadsheet import. openpyxl is
+    used only to recover the Cage Barcode cell number formats that pandas does
+    not preserve. All non-barcode columns therefore retain the app's existing
+    import behavior.
+    """
+    df = pd.read_excel(path)
+
+    workbook = load_workbook(path, data_only=True)
+    try:
+        worksheet = workbook.active
+        excel_headers = {
+            _normalized_column_name(cell.value): cell.column
+            for cell in worksheet[1]
+            if safe_str(cell.value)
+        }
+
+        for column_name in df.columns:
+            if not _is_barcode_column(column_name):
+                continue
+
+            excel_column = excel_headers.get(_normalized_column_name(column_name))
+            if excel_column is None:
+                continue
+
+            barcode_values = [
+                _format_excel_barcode(
+                    worksheet.cell(row=row_index + 2, column=excel_column).value,
+                    worksheet.cell(row=row_index + 2, column=excel_column).number_format,
+                )
+                for row_index in range(len(df))
+            ]
+            df[column_name] = pd.Series(barcode_values, index=df.index, dtype="string")
+    finally:
+        workbook.close()
+
+    return df
 
 
 def ensure_editable_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -192,7 +302,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             return
 
         try:
-            df = pd.read_excel(file_info["datapath"])
+            df = read_editable_cage_workbook(file_info["datapath"])
             editable_df.set(ensure_editable_columns(df))
             edit_version.set(0)
         except Exception as exc:
@@ -231,6 +341,10 @@ def server(input: Inputs, output: Outputs, session: Session):
         col_name = df.columns[patch["column_index"]]
         if col_name == PRINT_COLUMN:
             value = safe_bool(value, default=True)
+        elif _is_barcode_column(col_name):
+            # Keep barcode edits textual so manually entered leading zeros are
+            # not converted back into a number by the editable grid.
+            value = safe_str(value)
 
         # Mutate in place and invalidate downstream generation without forcing
         # the whole DataGrid to rebuild after every edit.
