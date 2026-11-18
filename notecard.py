@@ -75,7 +75,7 @@ CARD_SLOTS = [
     (RIGHT_CARD_X, BOTTOM_CARD_Y),
 ]
 
-# Back-page slot mapping for landscape duplex printing with "flip on long edge".
+# Back-page slot mapping for landscape duplex printing with "flip on short edge".
 #
 # The printed tests showed two separate duplex effects:
 #   1. An upright PDF back page prints upside down on the physical card.
@@ -83,7 +83,7 @@ CARD_SLOTS = [
 #
 # Therefore the back page must be generated as an intentionally upside-down
 # page AND the logical draw slots must be vertically swapped before that
-# rotation. After the printer flips on the long edge, each physical card ends
+# rotation. After the printer flips on the short edge, each physical card ends
 # up upright and paired with its own back.
 #
 # Front slots:
@@ -922,7 +922,7 @@ def build_notecards_pdf_bytes(
         # Back page: draw into duplex-compensated logical slots, then rotate
         # the whole page 180 degrees. In the PDF preview, back pages should
         # look upside down. That is intentional: with landscape, double-sided,
-        # flip on long edge, the printer turns them upright and places each
+        # flip on short edge, the printer turns them upright and places each
         # back behind the correct front card.
         c.saveState()
         c.translate(PAGE_W, PAGE_H)
@@ -948,7 +948,7 @@ def build_notecards_pdf_bytes(
         "card_width_mm": CARD_WIDTH_MM,
         "card_height_mm": CARD_HEIGHT_MM,
         "output_format": "pdf",
-        "duplex_mode": "landscape_long_edge_back_pages_rotated_180_with_vertical_slot_swap",
+        "duplex_mode": "landscape_short_edge_back_pages_rotated_180_with_vertical_slot_swap",
     }
     return output.getvalue(), metadata
 
@@ -1036,8 +1036,8 @@ def main() -> None:
         for item in metadata["warnings"]:
             print(f"- {item}")
     print(f"Saved: {metadata['output_path']}")
-    print("Print at Actual Size / 100% scale. Use double-sided, flip on long edge.")
-    print("Note: back pages are intentionally rotated in the PDF preview so long-edge duplex prints upright behind the correct card.")
+    print("Print at Actual Size / 100% scale. Use double-sided, flip on short edge.")
+    print("Note: back pages are intentionally rotated in the PDF preview so short-edge duplex prints upright behind the correct card.")
     print("--------------------------------------")
 
 

@@ -27,7 +27,7 @@ The generated PDF is designed for duplex printing. Use these print settings:
 ```text
 Scale: Actual Size / 100%
 Double-sided: On
-Flip: Long edge
+Flip: Short edge
 ````
 
 ## Files
